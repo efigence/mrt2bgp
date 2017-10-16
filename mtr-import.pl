@@ -116,6 +116,7 @@ sub send_update {
             $i++;
         }
     }
+    $log->info("done importing");
     $run_import = 0;
     $import_done=1;
     close($fd);
@@ -196,7 +197,8 @@ sub bgpdump2update {
         $log->error("[bgpdump]no idea what line [$line] represents, cant decipher");
         return undef;
     }
-    my @as_path = flat($MY_AS, split(/\s+/,$as_path_raw));
+#    my @as_path = flat($MY_AS, split(/\s+/,$as_path_raw));
+    my @as_path = split(/\s+/,$as_path);
     my @community = split(split(/\s+/,$community));
     $update = Net::BGP::Update->new(
         NLRI            => [ $network ],
