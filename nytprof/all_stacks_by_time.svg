@@ -1,0 +1,770 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="258" onload="init(evt)" viewBox="0 0 1200 258" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<defs >
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	.func_g:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	var details, svg;
+	function init(evt) { 
+		details = document.getElementById("details").firstChild; 
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+	}
+
+	// mouse-over for info
+	function s(info) { details.nodeValue = "sub " + info; }
+	function c() { details.nodeValue = ' '; }
+
+	// functions
+	function find_child(parent, name, attr) {
+		var children = parent.childNodes;
+		for (var i=0; i<children.length;i++) {
+			if (children[i].tagName == name)
+				return (attr != undefined) ? children[i].attributes[attr].value : children[i];
+		}
+		return;
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_"+attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_"+attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_"+attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes["width"].value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)/,"");
+		t.attributes["x"].value = parseFloat(r.attributes["x"].value) +3;
+		
+		// Smaller than this size won't fit anything
+		if (w < 2*12*0.59) {
+			t.textContent = "";
+			return;
+		}
+		
+		t.textContent = txt;
+		// Fit in full text width
+		if (/^ *$/.test(txt) || t.getSubStringLength(0, txt.length) < w)
+			return;
+		
+		for (var x=txt.length-2; x>0; x--) {
+			if (t.getSubStringLength(0, x+2) <= w) { 
+				t.textContent = txt.substring(0,x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for(var i=0, c=e.childNodes; i<c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes["x"] != undefined) {
+				orig_save(e, "x");
+				e.attributes["x"].value = (parseFloat(e.attributes["x"].value) - x - 10) * ratio + 10;
+				if(e.tagName == "text") e.attributes["x"].value = find_child(e.parentNode, "rect", "x") + 3;
+			}
+			if (e.attributes["width"] != undefined) {
+				orig_save(e, "width");
+				e.attributes["width"].value = parseFloat(e.attributes["width"].value) * ratio;
+			}
+		}
+		
+		if (e.childNodes == undefined) return;
+		for(var i=0, c=e.childNodes; i<c.length; i++) {
+			zoom_child(c[i], x-10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes["x"] != undefined) {
+				orig_save(e, "x");
+				e.attributes["x"].value = 10;
+			}
+			if (e.attributes["width"] != undefined) {
+				orig_save(e, "width");
+				e.attributes["width"].value = parseInt(svg.width.baseVal.value) - (10*2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for(var i=0, c=e.childNodes; i<c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) { 
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr["width"].value);
+		var xmin = parseFloat(attr["x"].value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr["y"].value);
+		var ratio = (svg.width.baseVal.value - 2*10) / width;
+		
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+		
+		var unzoombtn = document.getElementById("unzoom");
+		unzoombtn.style["opacity"] = "1.0";
+		
+		var el = document.getElementsByTagName("g");
+		for(var i=0;i<el.length;i++){
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a["x"].value);
+			var ew = parseFloat(a["width"].value);
+			// Is it an ancestor
+			if (0 == 0) {
+				var upstack = parseFloat(a["y"].value) > ymin;
+			} else {
+				var upstack = parseFloat(a["y"].value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.style["opacity"] = "0.5";
+					zoom_parent(e);
+					e.onclick = function(e){unzoom(); zoom(this);};
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.style["display"] = "none";
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.style["display"] = "none";
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					e.onclick = function(e){zoom(this);};
+					update_text(e);
+				}
+			}
+		}
+	}
+	function unzoom() {
+		var unzoombtn = document.getElementById("unzoom");
+		unzoombtn.style["opacity"] = "0.0";
+		
+		var el = document.getElementsByTagName("g");
+		for(i=0;i<el.length;i++) {
+			el[i].style["display"] = "block";
+			el[i].style["opacity"] = "1";
+			zoom_reset(el[i]);
+			update_text(el[i]);
+		}
+	}	
+
+	// search
+	function reset_search() {
+		var el = document.getElementsByTagName("rect");
+		for (var i=0; i < el.length; i++){
+			orig_load(el[i], "fill")
+		}
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)", "");
+			if (term != null) {
+				search(term)
+			}
+		} else {
+			reset_search();
+			searching = 0;
+			var searchbtn = document.getElementById("search");
+			searchbtn.style["opacity"] = "0.1";
+			searchbtn.firstChild.nodeValue = "Search"
+		}
+	}
+	function search(term) {
+		var re = new RegExp(term);
+		var el = document.getElementsByTagName("g");
+		for (var i=0; i < el.length; i++){
+			var e = el[i];
+			if (e.attributes["class"].value == "func_g") {
+				// Scrape the function name from the onmouseover
+				// callback text. This is a little dirty.
+				var func = e.attributes["onmouseover"].value;
+				if (func != null) {
+					func = func.substr(3);
+					func = func.replace(/ .*/, "");
+					var r = find_child(e, "rect");
+					if (r == null) {
+						// the rect might be wrapped in an anchor
+						// if nameattr href is being used
+						if (r = find_child(e, "a")) {
+						    r = find_child(r, "rect");
+						}
+					}
+				}
+				if (func != null && r != null &&
+				    func.match(re)) {
+					orig_save(r, "fill");
+					r.attributes["fill"].value =
+					    "rgb(230,0,230)";
+					searching = 1;
+				}
+			}
+		}
+		if (searching) {
+			var searchbtn = document.getElementById("search");
+			searchbtn.style["opacity"] = "1.0";
+			searchbtn.firstChild.nodeValue = "Reset Search"
+		}
+	}
+	function searchover(e) {
+		var searchbtn = document.getElementById("search");
+		searchbtn.style["opacity"] = "1.0";
+	}
+	function searchout(e) {
+		var searchbtn = document.getElementById("search");
+		if (searching) {
+			searchbtn.style["opacity"] = "1.0";
+		} else {
+			searchbtn.style["opacity"] = "0.1";
+		}
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="258.0" fill="url(#background)"  />
+<text text-anchor="middle" x="600.00" y="24" font-size="17" font-family="Verdana" fill="rgb(0,0,0)"  >Flame Graph</text>
+<text text-anchor="" x="10.00" y="241" font-size="12" font-family="Verdana" fill="rgb(0,0,0)" id="details" > </text>
+<text text-anchor="" x="10.00" y="24" font-size="12" font-family="Verdana" fill="rgb(0,0,0)" id="unzoom" onclick="unzoom()" style="opacity:0.0;cursor:pointer" >Reset Zoom</text>
+<text text-anchor="" x="1090.00" y="24" font-size="12" font-family="Verdana" fill="rgb(0,0,0)" id="search" onmouseover="searchover()" onmouseout="searchout()" onclick="search_prompt()" style="opacity:0.1;cursor:pointer" >Search</text>
+<g class="func_g" onmouseover="s('Net::BGP::Peer::BEGIN@41 (819 microseconds, 0.01%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::Peer::BEGIN@41 (819 microseconds, 0.01%)</title><a xlink:href="Peer-pm-26-line.html#41" target="_top"><rect x="1186.5" y="161" width="0.1" height="15.0" fill="rgb(227,130,25)" rx="2" ry="2" />
+<text text-anchor="" x="1189.49" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::Update::_encode_as_path (331,841 microseconds, 3.58%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::Update::_encode_as_path (331,841 microseconds, 3.58%)</title><a xlink:href="Update-pm-34-line.html#781" target="_top"><rect x="946.5" y="81" width="42.2" height="15.0" fill="rgb(240,130,39)" rx="2" ry="2" />
+<text text-anchor="" x="949.50" y="91.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >Net..</text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::Update::BGP_PATH_ATTR_AS_PATH (3,505 microseconds, 0.04%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::Update::BGP_PATH_ATTR_AS_PATH (3,505 microseconds, 0.04%)</title><a xlink:href="Update-pm-34-line.html#33" target="_top"><rect x="981.7" y="65" width="0.5" height="15.0" fill="rgb(240,130,38)" rx="2" ry="2" />
+<text text-anchor="" x="984.73" y="75.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::NLRI::BEGIN@30 (3,178 microseconds, 0.03%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::NLRI::BEGIN@30 (3,178 microseconds, 0.03%)</title><a xlink:href="NLRI-pm-35-line.html#30" target="_top"><rect x="1187.3" y="129" width="0.5" height="15.0" fill="rgb(230,130,28)" rx="2" ry="2" />
+<text text-anchor="" x="1190.35" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::Update::_encode_origin (131,418 microseconds, 1.42%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::Update::_encode_origin (131,418 microseconds, 1.42%)</title><a xlink:href="Update-pm-34-line.html#773" target="_top"><rect x="1015.7" y="81" width="16.7" height="15.0" fill="rgb(243,130,42)" rx="2" ry="2" />
+<text text-anchor="" x="1018.69" y="91.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('IO::Socket::BEGIN@11 (2,107 microseconds, 0.02%)')" onmouseout="c()" onclick="zoom(this)">
+<title>IO::Socket::BEGIN@11 (2,107 microseconds, 0.02%)</title><a xlink:href="IO-Socket-pm-12-line.html#11" target="_top"><rect x="1185.4" y="161" width="0.3" height="15.0" fill="rgb(231,163,28)" rx="2" ry="2" />
+<text text-anchor="" x="1188.44" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::Transport::_handle_event (3,156 microseconds, 0.03%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::Transport::_handle_event (3,156 microseconds, 0.03%)</title><a xlink:href="Transport-pm-44-line.html#501" target="_top"><rect x="1184.2" y="161" width="0.4" height="15.0" fill="rgb(241,130,39)" rx="2" ry="2" />
+<text text-anchor="" x="1187.19" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::ASPath::AS_SEQUENCE::type (2,755 microseconds, 0.03%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::ASPath::AS_SEQUENCE::type (2,755 microseconds, 0.03%)</title><a xlink:href="AS_SEQUENCE-pm-41-line.html#12" target="_top"><rect x="975.3" y="33" width="0.3" height="15.0" fill="rgb(250,130,49)" rx="2" ry="2" />
+<text text-anchor="" x="978.29" y="43.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::Update::_encode_message (994,287 microseconds, 10.71%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::Update::_encode_message (994,287 microseconds, 10.71%)</title><a xlink:href="Update-pm-34-line.html#719" target="_top"><rect x="921.3" y="113" width="126.4" height="15.0" fill="rgb(248,130,47)" rx="2" ry="2" />
+<text text-anchor="" x="924.30" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >Net::BGP::Updat..</text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::ASPath::AS::CORE:pack (2,460 microseconds, 0.03%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::ASPath::AS::CORE:pack (2,460 microseconds, 0.03%)</title><a xlink:href="AS-pm-39-line.html#Net__BGP__ASPath__AS__CORE_pack" target="_top"><rect x="974.1" y="33" width="0.3" height="15.0" fill="rgb(242,130,40)" rx="2" ry="2" />
+<text text-anchor="" x="977.11" y="43.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::Update::_encode_med (101,034 microseconds, 1.09%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::Update::_encode_med (101,034 microseconds, 1.09%)</title><a xlink:href="Update-pm-34-line.html#808" target="_top"><rect x="988.7" y="81" width="12.8" height="15.0" fill="rgb(252,130,51)" rx="2" ry="2" />
+<text text-anchor="" x="991.69" y="91.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::Transport::BGP_MESSAGE_HEADER_LENGTH (3,043 microseconds, 0.03%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::Transport::BGP_MESSAGE_HEADER_LENGTH (3,043 microseconds, 0.03%)</title><a xlink:href="Transport-pm-44-line.html#30" target="_top"><rect x="903.6" y="81" width="0.3" height="15.0" fill="rgb(236,130,34)" rx="2" ry="2" />
+<text text-anchor="" x="906.55" y="91.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('IO::Socket::BEGIN@12 (1,791 microseconds, 0.02%)')" onmouseout="c()" onclick="zoom(this)">
+<title>IO::Socket::BEGIN@12 (1,791 microseconds, 0.02%)</title><a xlink:href="IO-Socket-pm-12-line.html#12" target="_top"><rect x="1185.7" y="161" width="0.2" height="15.0" fill="rgb(246,163,45)" rx="2" ry="2" />
+<text text-anchor="" x="1188.71" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::Update::CORE:pack (2,978 microseconds, 0.03%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::Update::CORE:pack (2,978 microseconds, 0.03%)</title><a xlink:href="Update-pm-34-line.html#Net__BGP__Update__CORE_pack" target="_top"><rect x="995.7" y="65" width="0.3" height="15.0" fill="rgb(242,130,40)" rx="2" ry="2" />
+<text text-anchor="" x="998.66" y="75.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Log::Any::Proxy::_stringify_params (1,867 microseconds, 0.02%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Log::Any::Proxy::_stringify_params (1,867 microseconds, 0.02%)</title><a xlink:href="Proxy-pm-54-line.html#13" target="_top"><rect x="1184.2" y="81" width="0.3" height="15.0" fill="rgb(234,154,32)" rx="2" ry="2" />
+<text text-anchor="" x="1187.22" y="91.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('IO::Socket::INET::BEGIN@11 (1,231 microseconds, 0.01%)')" onmouseout="c()" onclick="zoom(this)">
+<title>IO::Socket::INET::BEGIN@11 (1,231 microseconds, 0.01%)</title><a xlink:href="IO-Socket-INET-pm-22-line.html#11" target="_top"><rect x="1186.0" y="161" width="0.2" height="15.0" fill="rgb(231,163,28)" rx="2" ry="2" />
+<text text-anchor="" x="1189.01" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::ASPath::new (314,297 microseconds, 3.39%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::ASPath::new (314,297 microseconds, 3.39%)</title><a xlink:href="ASPath-pm-38-line.html#42" target="_top"><rect x="1134.9" y="97" width="40.0" height="15.0" fill="rgb(235,130,33)" rx="2" ry="2" />
+<text text-anchor="" x="1137.93" y="107.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >Net..</text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::Update::CORE:pack (6,312 microseconds, 0.07%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::Update::CORE:pack (6,312 microseconds, 0.07%)</title><a xlink:href="Update-pm-34-line.html#Net__BGP__Update__CORE_pack" target="_top"><rect x="1046.9" y="65" width="0.8" height="15.0" fill="rgb(242,130,40)" rx="2" ry="2" />
+<text text-anchor="" x="1049.91" y="75.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::Process::BEGIN@16 (9,092 microseconds, 0.10%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::Process::BEGIN@16 (9,092 microseconds, 0.10%)</title><a xlink:href="Process-pm-3-line.html#16" target="_top"><rect x="1185.1" y="177" width="1.2" height="15.0" fill="rgb(239,130,38)" rx="2" ry="2" />
+<text text-anchor="" x="1188.14" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::Update::_encode_attr (55,697 microseconds, 0.60%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::Update::_encode_attr (55,697 microseconds, 0.60%)</title><a xlink:href="Update-pm-34-line.html#209" target="_top"><rect x="1025.3" y="65" width="7.1" height="15.0" fill="rgb(235,130,33)" rx="2" ry="2" />
+<text text-anchor="" x="1028.32" y="75.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Exporter::export (948 microseconds, 0.01%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Exporter::export (948 microseconds, 0.01%)</title><a xlink:href="Exporter-pm-10-line.html#24" target="_top"><rect x="1186.0" y="129" width="0.2" height="15.0" fill="rgb(238,94,36)" rx="2" ry="2" />
+<text text-anchor="" x="1189.04" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('main::bgp_open_cb (1,922 microseconds, 0.02%)')" onmouseout="c()" onclick="zoom(this)">
+<title>main::bgp_open_cb (1,922 microseconds, 0.02%)</title><a xlink:href="home-xani-src-git-perl-bgp-mtr-import-pl-1-line.html#46" target="_top"><rect x="1184.2" y="113" width="0.3" height="15.0" fill="rgb(233,83,31)" rx="2" ry="2" />
+<text text-anchor="" x="1187.22" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('all (9,281,510 microseconds, 100%)')" onmouseout="c()" onclick="zoom(this)">
+<title>all (9,281,510 microseconds, 100%)</title><rect x="10.0" y="209" width="1180.0" height="15.0" fill="rgb(255,230,55)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::ASPath::AS_SEQUENCE::asarray (5,024 microseconds, 0.05%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::ASPath::AS_SEQUENCE::asarray (5,024 microseconds, 0.05%)</title><a xlink:href="AS_SEQUENCE-pm-41-line.html#28" target="_top"><rect x="981.1" y="33" width="0.6" height="15.0" fill="rgb(239,130,37)" rx="2" ry="2" />
+<text text-anchor="" x="984.09" y="43.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::Transport::update (1,385,991 microseconds, 14.93%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::Transport::update (1,385,991 microseconds, 14.93%)</title><a xlink:href="Transport-pm-44-line.html#355" target="_top"><rect x="871.5" y="129" width="176.2" height="15.0" fill="rgb(245,130,45)" rx="2" ry="2" />
+<text text-anchor="" x="874.51" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >Net::BGP::Transport::u..</text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Socket::inet_aton (7,382 microseconds, 0.08%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Socket::inet_aton (7,382 microseconds, 0.08%)</title><a xlink:href="Socket-pm-19-line.html#Socket__inet_aton" target="_top"><rect x="1014.8" y="65" width="0.9" height="15.0" fill="rgb(248,191,47)" rx="2" ry="2" />
+<text text-anchor="" x="1017.76" y="75.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('IO::Handle::CORE:syswrite (74,951 microseconds, 0.81%)')" onmouseout="c()" onclick="zoom(this)">
+<title>IO::Handle::CORE:syswrite (74,951 microseconds, 0.81%)</title><a xlink:href="IO-Handle-pm-13-line.html#IO__Handle__CORE_syswrite" target="_top"><rect x="911.8" y="81" width="9.5" height="15.0" fill="rgb(240,163,38)" rx="2" ry="2" />
+<text text-anchor="" x="914.78" y="91.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::Update::CORE:pack (2,478 microseconds, 0.03%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::Update::CORE:pack (2,478 microseconds, 0.03%)</title><a xlink:href="Update-pm-34-line.html#Net__BGP__Update__CORE_pack" target="_top"><rect x="1032.1" y="49" width="0.3" height="15.0" fill="rgb(242,130,40)" rx="2" ry="2" />
+<text text-anchor="" x="1035.09" y="59.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::Update::_encode_path_attributes (774,152 microseconds, 8.34%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::Update::_encode_path_attributes (774,152 microseconds, 8.34%)</title><a xlink:href="Update-pm-34-line.html#877" target="_top"><rect x="934.0" y="97" width="98.4" height="15.0" fill="rgb(238,130,36)" rx="2" ry="2" />
+<text text-anchor="" x="936.98" y="107.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >Net::BGP::U..</text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::Process::BEGIN@6 (1,689 microseconds, 0.02%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::Process::BEGIN@6 (1,689 microseconds, 0.02%)</title><a xlink:href="Process-pm-3-line.html#6" target="_top"><rect x="1188.3" y="177" width="0.3" height="15.0" fill="rgb(233,130,31)" rx="2" ry="2" />
+<text text-anchor="" x="1191.35" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::Peer::BEGIN@49 (3,816 microseconds, 0.04%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::Peer::BEGIN@49 (3,816 microseconds, 0.04%)</title><a xlink:href="Peer-pm-26-line.html#49" target="_top"><rect x="1187.8" y="161" width="0.5" height="15.0" fill="rgb(231,130,28)" rx="2" ry="2" />
+<text text-anchor="" x="1190.82" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('IO::Select::CORE:sselect (6,040,623 microseconds, 65.08%)')" onmouseout="c()" onclick="zoom(this)">
+<title>IO::Select::CORE:sselect (6,040,623 microseconds, 65.08%)</title><a xlink:href="IO-Select-pm-11-line.html#IO__Select__CORE_sselect" target="_top"><rect x="10.1" y="161" width="767.9" height="15.0" fill="rgb(241,163,39)" rx="2" ry="2" />
+<text text-anchor="" x="13.06" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >IO::Select::CORE:sselect</text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::Update::CORE:match (11,717 microseconds, 0.13%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::Update::CORE:match (11,717 microseconds, 0.13%)</title><a xlink:href="Update-pm-34-line.html#Net__BGP__Update__CORE_match" target="_top"><rect x="1178.2" y="113" width="1.5" height="15.0" fill="rgb(242,130,41)" rx="2" ry="2" />
+<text text-anchor="" x="1181.20" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('main::send_update (3,193,780 microseconds, 34.41%)')" onmouseout="c()" onclick="zoom(this)">
+<title>main::send_update (3,193,780 microseconds, 34.41%)</title><a xlink:href="home-xani-src-git-perl-bgp-mtr-import-pl-1-line.html#78" target="_top"><rect x="778.1" y="161" width="406.0" height="15.0" fill="rgb(245,83,45)" rx="2" ry="2" />
+<text text-anchor="" x="781.06" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >main::send_update</text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('vars::BEGIN@7 (1,368 microseconds, 0.01%)')" onmouseout="c()" onclick="zoom(this)">
+<title>vars::BEGIN@7 (1,368 microseconds, 0.01%)</title><a xlink:href="vars-pm-5-line.html#7" target="_top"><rect x="1188.4" y="161" width="0.2" height="15.0" fill="rgb(232,101,29)" rx="2" ry="2" />
+<text text-anchor="" x="1191.39" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::NLRI::BEGIN@22 (1,000 microseconds, 0.01%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::NLRI::BEGIN@22 (1,000 microseconds, 0.01%)</title><a xlink:href="NLRI-pm-35-line.html#22" target="_top"><rect x="1187.2" y="129" width="0.1" height="15.0" fill="rgb(245,130,44)" rx="2" ry="2" />
+<text text-anchor="" x="1190.22" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::Transport::_send_msg (134,269 microseconds, 1.45%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::Transport::_send_msg (134,269 microseconds, 1.45%)</title><a xlink:href="Transport-pm-44-line.html#626" target="_top"><rect x="904.2" y="113" width="17.1" height="15.0" fill="rgb(243,130,42)" rx="2" ry="2" />
+<text text-anchor="" x="907.23" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::Update::CORE:pack (4,942 microseconds, 0.05%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::Update::CORE:pack (4,942 microseconds, 0.05%)</title><a xlink:href="Update-pm-34-line.html#Net__BGP__Update__CORE_pack" target="_top"><rect x="933.4" y="97" width="0.6" height="15.0" fill="rgb(242,130,40)" rx="2" ry="2" />
+<text text-anchor="" x="936.35" y="107.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::ASPath::AS::CORE:match (10,325 microseconds, 0.11%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::ASPath::AS::CORE:match (10,325 microseconds, 0.11%)</title><a xlink:href="AS-pm-39-line.html#Net__BGP__ASPath__AS__CORE_match" target="_top"><rect x="1170.5" y="49" width="1.4" height="15.0" fill="rgb(242,130,41)" rx="2" ry="2" />
+<text text-anchor="" x="1173.54" y="59.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::Transport::BGP_STATE_ESTABLISHED (3,518 microseconds, 0.04%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::Transport::BGP_STATE_ESTABLISHED (3,518 microseconds, 0.04%)</title><a xlink:href="Transport-pm-44-line.html#43" target="_top"><rect x="888.7" y="113" width="0.5" height="15.0" fill="rgb(237,130,36)" rx="2" ry="2" />
+<text text-anchor="" x="891.70" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::NLRI::IGP (3,711 microseconds, 0.04%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::NLRI::IGP (3,711 microseconds, 0.04%)</title><a xlink:href="NLRI-pm-35-line.html#38" target="_top"><rect x="1177.7" y="97" width="0.5" height="15.0" fill="rgb(248,130,48)" rx="2" ry="2" />
+<text text-anchor="" x="1180.73" y="107.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('main::CORE:readline (48,355 microseconds, 0.52%)')" onmouseout="c()" onclick="zoom(this)">
+<title>main::CORE:readline (48,355 microseconds, 0.52%)</title><a xlink:href="home-xani-src-git-perl-bgp-mtr-import-pl-1-line.html#main__CORE_readline" target="_top"><rect x="1051.1" y="145" width="6.1" height="15.0" fill="rgb(246,83,46)" rx="2" ry="2" />
+<text text-anchor="" x="1054.08" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Log::Any::BEGIN@11 (1,703 microseconds, 0.02%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Log::Any::BEGIN@11 (1,703 microseconds, 0.02%)</title><a xlink:href="Any-pm-49-line.html#11" target="_top"><rect x="1189.3" y="177" width="0.2" height="15.0" fill="rgb(231,154,28)" rx="2" ry="2" />
+<text text-anchor="" x="1192.26" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::Peer::update (1,424,414 microseconds, 15.35%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::Peer::update (1,424,414 microseconds, 15.35%)</title><a xlink:href="Peer-pm-26-line.html#240" target="_top"><rect x="866.6" y="145" width="181.1" height="15.0" fill="rgb(245,130,45)" rx="2" ry="2" />
+<text text-anchor="" x="869.62" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >Net::BGP::Peer::update</text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::Update::_encode_attr (43,264 microseconds, 0.47%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::Update::_encode_attr (43,264 microseconds, 0.47%)</title><a xlink:href="Update-pm-34-line.html#209" target="_top"><rect x="996.0" y="65" width="5.5" height="15.0" fill="rgb(235,130,33)" rx="2" ry="2" />
+<text text-anchor="" x="999.04" y="75.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::Update::CORE:pack (1,966 microseconds, 0.02%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::Update::CORE:pack (1,966 microseconds, 0.02%)</title><a xlink:href="Update-pm-34-line.html#Net__BGP__Update__CORE_pack" target="_top"><rect x="1014.5" y="49" width="0.3" height="15.0" fill="rgb(242,130,40)" rx="2" ry="2" />
+<text text-anchor="" x="1017.51" y="59.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::Transport::FALSE (3,495 microseconds, 0.04%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::Transport::FALSE (3,495 microseconds, 0.04%)</title><a xlink:href="Transport-pm-44-line.html#21" target="_top"><rect x="889.2" y="113" width="0.4" height="15.0" fill="rgb(229,130,27)" rx="2" ry="2" />
+<text text-anchor="" x="892.15" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::Peer::BEGIN@48 (8,118 microseconds, 0.09%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::Peer::BEGIN@48 (8,118 microseconds, 0.09%)</title><a xlink:href="Peer-pm-26-line.html#48" target="_top"><rect x="1186.8" y="161" width="1.0" height="15.0" fill="rgb(232,130,30)" rx="2" ry="2" />
+<text text-anchor="" x="1189.79" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::Transport::TRUE (5,039 microseconds, 0.05%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::Transport::TRUE (5,039 microseconds, 0.05%)</title><a xlink:href="Transport-pm-44-line.html#20" target="_top"><rect x="889.6" y="113" width="0.6" height="15.0" fill="rgb(223,130,20)" rx="2" ry="2" />
+<text text-anchor="" x="892.60" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('main::BEGIN@8 (3,504 microseconds, 0.04%)')" onmouseout="c()" onclick="zoom(this)">
+<title>main::BEGIN@8 (3,504 microseconds, 0.04%)</title><a xlink:href="home-xani-src-git-perl-bgp-mtr-import-pl-1-line.html#8" target="_top"><rect x="1189.1" y="193" width="0.5" height="15.0" fill="rgb(230,83,28)" rx="2" ry="2" />
+<text text-anchor="" x="1192.12" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::Update::BEGIN@14 (5,495 microseconds, 0.06%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::Update::BEGIN@14 (5,495 microseconds, 0.06%)</title><a xlink:href="Update-pm-34-line.html#14" target="_top"><rect x="1187.1" y="145" width="0.7" height="15.0" fill="rgb(243,130,42)" rx="2" ry="2" />
+<text text-anchor="" x="1190.06" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::Transport::CORE:pack (2,306 microseconds, 0.02%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::Transport::CORE:pack (2,306 microseconds, 0.02%)</title><a xlink:href="Transport-pm-44-line.html#Net__BGP__Transport__CORE_pack" target="_top"><rect x="903.9" y="81" width="0.3" height="15.0" fill="rgb(242,130,40)" rx="2" ry="2" />
+<text text-anchor="" x="906.94" y="91.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::ASPath::_encode (213,458 microseconds, 2.30%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::ASPath::_encode (213,458 microseconds, 2.30%)</title><a xlink:href="ASPath-pm-38-line.html#219" target="_top"><rect x="954.6" y="65" width="27.1" height="15.0" fill="rgb(250,130,49)" rx="2" ry="2" />
+<text text-anchor="" x="957.59" y="75.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >N..</text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::Update::BGP_PATH_ATTR_NEXT_HOP (2,664 microseconds, 0.03%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::Update::BGP_PATH_ATTR_NEXT_HOP (2,664 microseconds, 0.03%)</title><a xlink:href="Update-pm-34-line.html#34" target="_top"><rect x="1008.9" y="65" width="0.3" height="15.0" fill="rgb(252,130,52)" rx="2" ry="2" />
+<text text-anchor="" x="1011.87" y="75.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('IO::Socket::import (1,228 microseconds, 0.01%)')" onmouseout="c()" onclick="zoom(this)">
+<title>IO::Socket::import (1,228 microseconds, 0.01%)</title><a xlink:href="IO-Socket-pm-12-line.html#30" target="_top"><rect x="1186.0" y="145" width="0.2" height="15.0" fill="rgb(238,163,36)" rx="2" ry="2" />
+<text text-anchor="" x="1189.01" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::Peer::open_callback (1,942 microseconds, 0.02%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::Peer::open_callback (1,942 microseconds, 0.02%)</title><a xlink:href="Peer-pm-26-line.html#444" target="_top"><rect x="1184.2" y="129" width="0.3" height="15.0" fill="rgb(242,130,40)" rx="2" ry="2" />
+<text text-anchor="" x="1187.21" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('main::CORE:regcomp (34,717 microseconds, 0.37%)')" onmouseout="c()" onclick="zoom(this)">
+<title>main::CORE:regcomp (34,717 microseconds, 0.37%)</title><a xlink:href="home-xani-src-git-perl-bgp-mtr-import-pl-1-line.html#main__CORE_regcomp" target="_top"><rect x="1179.7" y="129" width="4.4" height="15.0" fill="rgb(238,83,36)" rx="2" ry="2" />
+<text text-anchor="" x="1182.69" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::Update::_encode_attr (51,276 microseconds, 0.55%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::Update::_encode_attr (51,276 microseconds, 0.55%)</title><a xlink:href="Update-pm-34-line.html#209" target="_top"><rect x="982.2" y="65" width="6.5" height="15.0" fill="rgb(235,130,33)" rx="2" ry="2" />
+<text text-anchor="" x="985.17" y="75.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::ASPath::AS::new (102,116 microseconds, 1.10%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::ASPath::AS::new (102,116 microseconds, 1.10%)</title><a xlink:href="AS-pm-39-line.html#38" target="_top"><rect x="1158.9" y="65" width="13.0" height="15.0" fill="rgb(235,130,33)" rx="2" ry="2" />
+<text text-anchor="" x="1161.87" y="75.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::ASPath::AS_SEQUENCE::asarray (6,807 microseconds, 0.07%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::ASPath::AS_SEQUENCE::asarray (6,807 microseconds, 0.07%)</title><a xlink:href="AS_SEQUENCE-pm-41-line.html#28" target="_top"><rect x="974.4" y="33" width="0.9" height="15.0" fill="rgb(239,130,37)" rx="2" ry="2" />
+<text text-anchor="" x="977.43" y="43.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Data::Dumper::BEGIN@279 (849 microseconds, 0.01%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Data::Dumper::BEGIN@279 (849 microseconds, 0.01%)</title><a xlink:href="Data-Dumper-pm-45-line.html#279" target="_top"><rect x="1188.9" y="177" width="0.1" height="15.0" fill="rgb(241,94,40)" rx="2" ry="2" />
+<text text-anchor="" x="1191.89" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::ASPath::BEGIN@34 (818 microseconds, 0.01%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::ASPath::BEGIN@34 (818 microseconds, 0.01%)</title><a xlink:href="ASPath-pm-38-line.html#34" target="_top"><rect x="1187.6" y="113" width="0.1" height="15.0" fill="rgb(241,130,39)" rx="2" ry="2" />
+<text text-anchor="" x="1190.57" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('IO::Handle::syswrite (96,451 microseconds, 1.04%)')" onmouseout="c()" onclick="zoom(this)">
+<title>IO::Handle::syswrite (96,451 microseconds, 1.04%)</title><a xlink:href="IO-Handle-pm-13-line.html#217" target="_top"><rect x="909.0" y="97" width="12.3" height="15.0" fill="rgb(240,163,38)" rx="2" ry="2" />
+<text text-anchor="" x="912.04" y="107.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::ASPath::CORE:match (14,641 microseconds, 0.16%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::ASPath::CORE:match (14,641 microseconds, 0.16%)</title><a xlink:href="ASPath-pm-38-line.html#Net__BGP__ASPath__CORE_match" target="_top"><rect x="1171.9" y="65" width="1.8" height="15.0" fill="rgb(242,130,41)" rx="2" ry="2" />
+<text text-anchor="" x="1174.85" y="75.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::Transport::_encode_bgp_message (70,246 microseconds, 0.76%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::Transport::_encode_bgp_message (70,246 microseconds, 0.76%)</title><a xlink:href="Transport-pm-44-line.html#1077" target="_top"><rect x="895.3" y="97" width="8.9" height="15.0" fill="rgb(248,130,47)" rx="2" ry="2" />
+<text text-anchor="" x="898.30" y="107.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('main::CORE:match (25,819 microseconds, 0.28%)')" onmouseout="c()" onclick="zoom(this)">
+<title>main::CORE:match (25,819 microseconds, 0.28%)</title><a xlink:href="home-xani-src-git-perl-bgp-mtr-import-pl-1-line.html#main__CORE_match" target="_top"><rect x="1047.7" y="145" width="3.3" height="15.0" fill="rgb(242,83,41)" rx="2" ry="2" />
+<text text-anchor="" x="1050.71" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::NLRI::CORE:match (22,312 microseconds, 0.24%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::NLRI::CORE:match (22,312 microseconds, 0.24%)</title><a xlink:href="NLRI-pm-35-line.html#Net__BGP__NLRI__CORE_match" target="_top"><rect x="1174.9" y="97" width="2.8" height="15.0" fill="rgb(242,130,41)" rx="2" ry="2" />
+<text text-anchor="" x="1177.89" y="107.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::ASPath::CORE:subst (9,236 microseconds, 0.10%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::ASPath::CORE:subst (9,236 microseconds, 0.10%)</title><a xlink:href="ASPath-pm-38-line.html#Net__BGP__ASPath__CORE_subst" target="_top"><rect x="1173.7" y="65" width="1.2" height="15.0" fill="rgb(237,130,35)" rx="2" ry="2" />
+<text text-anchor="" x="1176.72" y="75.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::ASPath::AS::_has_as4 (47,847 microseconds, 0.52%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::ASPath::AS::_has_as4 (47,847 microseconds, 0.52%)</title><a xlink:href="AS-pm-39-line.html#170" target="_top"><rect x="975.6" y="49" width="6.1" height="15.0" fill="rgb(245,130,44)" rx="2" ry="2" />
+<text text-anchor="" x="978.64" y="59.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Log::Any::Proxy::__ANON__[/home/xani/src/git/perl-bgp/local/lib/perl5/Log/Any/Proxy.pm:121] (1,902 microseconds, 0.02%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Log::Any::Proxy::__ANON__[/home/xani/src/git/perl-bgp/local/lib/perl5/Log/Any/Proxy.pm:121] (1,902 microseconds, 0.02%)</title><a xlink:href="Proxy-pm-54-line.html#90" target="_top"><rect x="1184.2" y="97" width="0.3" height="15.0" fill="rgb(242,154,41)" rx="2" ry="2" />
+<text text-anchor="" x="1187.22" y="107.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Exporter::as_heavy (945 microseconds, 0.01%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Exporter::as_heavy (945 microseconds, 0.01%)</title><a xlink:href="Exporter-pm-10-line.html#15" target="_top"><rect x="1186.0" y="113" width="0.2" height="15.0" fill="rgb(243,94,42)" rx="2" ry="2" />
+<text text-anchor="" x="1189.04" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::NLRI::new (622,787 microseconds, 6.71%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::NLRI::new (622,787 microseconds, 6.71%)</title><a xlink:href="NLRI-pm-35-line.html#61" target="_top"><rect x="1099.0" y="113" width="79.2" height="15.0" fill="rgb(235,130,33)" rx="2" ry="2" />
+<text text-anchor="" x="1102.02" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >Net::BGP:..</text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::ASPath::AS::CORE:match (2,464 microseconds, 0.03%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::ASPath::AS::CORE:match (2,464 microseconds, 0.03%)</title><a xlink:href="AS-pm-39-line.html#Net__BGP__ASPath__AS__CORE_match" target="_top"><rect x="980.8" y="33" width="0.3" height="15.0" fill="rgb(242,130,41)" rx="2" ry="2" />
+<text text-anchor="" x="983.77" y="43.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::Update::CORE:pack (2,279 microseconds, 0.02%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::Update::CORE:pack (2,279 microseconds, 0.02%)</title><a xlink:href="Update-pm-34-line.html#Net__BGP__Update__CORE_pack" target="_top"><rect x="988.4" y="49" width="0.3" height="15.0" fill="rgb(242,130,40)" rx="2" ry="2" />
+<text text-anchor="" x="991.40" y="59.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('main::BEGIN@7 (932 microseconds, 0.01%)')" onmouseout="c()" onclick="zoom(this)">
+<title>main::BEGIN@7 (932 microseconds, 0.01%)</title><a xlink:href="home-xani-src-git-perl-bgp-mtr-import-pl-1-line.html#7" target="_top"><rect x="1189.0" y="193" width="0.1" height="15.0" fill="rgb(232,83,29)" rx="2" ry="2" />
+<text text-anchor="" x="1192.00" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::ASPath::_setfromstring (250,907 microseconds, 2.70%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::ASPath::_setfromstring (250,907 microseconds, 2.70%)</title><a xlink:href="ASPath-pm-38-line.html#75" target="_top"><rect x="1143.0" y="81" width="31.9" height="15.0" fill="rgb(243,130,42)" rx="2" ry="2" />
+<text text-anchor="" x="1145.99" y="91.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >Ne..</text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::Update::_encode_prefix (81,160 microseconds, 0.87%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::Update::_encode_prefix (81,160 microseconds, 0.87%)</title><a xlink:href="Update-pm-34-line.html#742" target="_top"><rect x="1037.4" y="81" width="10.3" height="15.0" fill="rgb(244,130,43)" rx="2" ry="2" />
+<text text-anchor="" x="1040.39" y="91.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::Process::BEGIN@14 (2,362 microseconds, 0.03%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::Process::BEGIN@14 (2,362 microseconds, 0.03%)</title><a xlink:href="Process-pm-3-line.html#14" target="_top"><rect x="1184.8" y="177" width="0.3" height="15.0" fill="rgb(243,130,42)" rx="2" ry="2" />
+<text text-anchor="" x="1187.76" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::Update::_encode_prefix_list (120,433 microseconds, 1.30%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::Update::_encode_prefix_list (120,433 microseconds, 1.30%)</title><a xlink:href="Update-pm-34-line.html#760" target="_top"><rect x="1032.4" y="97" width="15.3" height="15.0" fill="rgb(232,130,30)" rx="2" ry="2" />
+<text text-anchor="" x="1035.40" y="107.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::Update::_encode_next_hop (111,367 microseconds, 1.20%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::Update::_encode_next_hop (111,367 microseconds, 1.20%)</title><a xlink:href="Update-pm-34-line.html#801" target="_top"><rect x="1001.5" y="81" width="14.2" height="15.0" fill="rgb(244,130,43)" rx="2" ry="2" />
+<text text-anchor="" x="1004.54" y="91.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::Transport::_handle_pending_events (3,211 microseconds, 0.03%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::Transport::_handle_pending_events (3,211 microseconds, 0.03%)</title><a xlink:href="Transport-pm-44-line.html#570" target="_top"><rect x="1184.2" y="177" width="0.4" height="15.0" fill="rgb(238,130,36)" rx="2" ry="2" />
+<text text-anchor="" x="1187.18" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::Peer::_update_timers (3,193,980 microseconds, 34.41%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::Peer::_update_timers (3,193,980 microseconds, 34.41%)</title><a xlink:href="Peer-pm-26-line.html#518" target="_top"><rect x="778.0" y="177" width="406.1" height="15.0" fill="rgb(238,130,36)" rx="2" ry="2" />
+<text text-anchor="" x="781.04" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >Net::BGP::Peer::_update_timers</text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::Update::new (862,697 microseconds, 9.29%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::Update::new (862,697 microseconds, 9.29%)</title><a xlink:href="Update-pm-34-line.html#96" target="_top"><rect x="1070.0" y="129" width="109.7" height="15.0" fill="rgb(235,130,33)" rx="2" ry="2" />
+<text text-anchor="" x="1073.01" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >Net::BGP::Upd..</text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::Process::BEGIN@17 (15,818 microseconds, 0.17%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::Process::BEGIN@17 (15,818 microseconds, 0.17%)</title><a xlink:href="Process-pm-3-line.html#17" target="_top"><rect x="1186.3" y="177" width="2.0" height="15.0" fill="rgb(238,130,36)" rx="2" ry="2" />
+<text text-anchor="" x="1189.30" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::Peer::transport (6,373 microseconds, 0.07%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::Peer::transport (6,373 microseconds, 0.07%)</title><a xlink:href="Peer-pm-26-line.html#252" target="_top"><rect x="870.7" y="129" width="0.8" height="15.0" fill="rgb(238,130,36)" rx="2" ry="2" />
+<text text-anchor="" x="873.70" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('main::BEGIN@6 (3,403 microseconds, 0.04%)')" onmouseout="c()" onclick="zoom(this)">
+<title>main::BEGIN@6 (3,403 microseconds, 0.04%)</title><a xlink:href="home-xani-src-git-perl-bgp-mtr-import-pl-1-line.html#6" target="_top"><rect x="1188.6" y="193" width="0.4" height="15.0" fill="rgb(233,83,31)" rx="2" ry="2" />
+<text text-anchor="" x="1191.57" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::Update::CORE:pack (1,783 microseconds, 0.02%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::Update::CORE:pack (1,783 microseconds, 0.02%)</title><a xlink:href="Update-pm-34-line.html#Net__BGP__Update__CORE_pack" target="_top"><rect x="1001.3" y="49" width="0.2" height="15.0" fill="rgb(242,130,40)" rx="2" ry="2" />
+<text text-anchor="" x="1004.31" y="59.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::Process::event_loop (9,239,072 microseconds, 99.54%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::Process::event_loop (9,239,072 microseconds, 99.54%)</title><a xlink:href="Process-pm-3-line.html#85" target="_top"><rect x="10.0" y="193" width="1174.6" height="15.0" fill="rgb(248,130,47)" rx="2" ry="2" />
+<text text-anchor="" x="13.02" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >Net::BGP::Process::event_loop</text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::Update::_encode_attr (43,652 microseconds, 0.47%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::Update::_encode_attr (43,652 microseconds, 0.47%)</title><a xlink:href="Update-pm-34-line.html#209" target="_top"><rect x="1009.2" y="65" width="5.6" height="15.0" fill="rgb(235,130,33)" rx="2" ry="2" />
+<text text-anchor="" x="1012.21" y="75.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::Transport::_encode_bgp_update_message (110,100 microseconds, 1.19%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::Transport::_encode_bgp_update_message (110,100 microseconds, 1.19%)</title><a xlink:href="Transport-pm-44-line.html#1431" target="_top"><rect x="890.2" y="113" width="14.0" height="15.0" fill="rgb(248,130,47)" rx="2" ry="2" />
+<text text-anchor="" x="893.24" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::Transport::BGP_MESSAGE_UPDATE (3,198 microseconds, 0.03%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::Transport::BGP_MESSAGE_UPDATE (3,198 microseconds, 0.03%)</title><a xlink:href="Transport-pm-44-line.html#89" target="_top"><rect x="894.9" y="97" width="0.4" height="15.0" fill="rgb(228,130,25)" rx="2" ry="2" />
+<text text-anchor="" x="897.90" y="107.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::ASPath::AS::_encode (108,300 microseconds, 1.17%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::ASPath::AS::_encode (108,300 microseconds, 1.17%)</title><a xlink:href="AS-pm-39-line.html#147" target="_top"><rect x="961.9" y="49" width="13.7" height="15.0" fill="rgb(250,130,49)" rx="2" ry="2" />
+<text text-anchor="" x="964.87" y="59.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('main::BEGIN@3 (30,811 microseconds, 0.33%)')" onmouseout="c()" onclick="zoom(this)">
+<title>main::BEGIN@3 (30,811 microseconds, 0.33%)</title><a xlink:href="home-xani-src-git-perl-bgp-mtr-import-pl-1-line.html#3" target="_top"><rect x="1184.6" y="193" width="4.0" height="15.0" fill="rgb(239,83,37)" rx="2" ry="2" />
+<text text-anchor="" x="1187.65" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::Update::CORE:pack (8,362 microseconds, 0.09%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::Update::CORE:pack (8,362 microseconds, 0.09%)</title><a xlink:href="Update-pm-34-line.html#Net__BGP__Update__CORE_pack" target="_top"><rect x="1024.3" y="65" width="1.0" height="15.0" fill="rgb(242,130,40)" rx="2" ry="2" />
+<text text-anchor="" x="1027.26" y="75.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('main::bgpdump2update (997,937 microseconds, 10.75%)')" onmouseout="c()" onclick="zoom(this)">
+<title>main::bgpdump2update (997,937 microseconds, 10.75%)</title><a xlink:href="home-xani-src-git-perl-bgp-mtr-import-pl-1-line.html#163" target="_top"><rect x="1057.2" y="145" width="126.9" height="15.0" fill="rgb(245,83,45)" rx="2" ry="2" />
+<text text-anchor="" x="1060.23" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >main::bgpdump2u..</text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::Update::BGP_PATH_ATTR_MULTI_EXIT_DISC (2,774 microseconds, 0.03%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::Update::BGP_PATH_ATTR_MULTI_EXIT_DISC (2,774 microseconds, 0.03%)</title><a xlink:href="Update-pm-34-line.html#35" target="_top"><rect x="995.3" y="65" width="0.4" height="15.0" fill="rgb(235,130,33)" rx="2" ry="2" />
+<text text-anchor="" x="998.30" y="75.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::Transport::_handle_bgp_open_received (2,087 microseconds, 0.02%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::Transport::_handle_bgp_open_received (2,087 microseconds, 0.02%)</title><a xlink:href="Transport-pm-44-line.html#919" target="_top"><rect x="1184.2" y="145" width="0.3" height="15.0" fill="rgb(245,130,44)" rx="2" ry="2" />
+<text text-anchor="" x="1187.21" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('overload::mycan (1,755 microseconds, 0.02%)')" onmouseout="c()" onclick="zoom(this)">
+<title>overload::mycan (1,755 microseconds, 0.02%)</title><a xlink:href="overload-pm-36-line.html#120" target="_top"><rect x="1184.2" y="49" width="0.3" height="15.0" fill="rgb(243,165,41)" rx="2" ry="2" />
+<text text-anchor="" x="1187.23" y="59.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('Net::BGP::Update::BGP_PATH_ATTR_ORIGIN (3,726 microseconds, 0.04%)')" onmouseout="c()" onclick="zoom(this)">
+<title>Net::BGP::Update::BGP_PATH_ATTR_ORIGIN (3,726 microseconds, 0.04%)</title><a xlink:href="Update-pm-34-line.html#32" target="_top"><rect x="1023.8" y="65" width="0.5" height="15.0" fill="rgb(225,130,22)" rx="2" ry="2" />
+<text text-anchor="" x="1026.78" y="75.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('List::Flatten::flat (12,280 microseconds, 0.13%)')" onmouseout="c()" onclick="zoom(this)">
+<title>List::Flatten::flat (12,280 microseconds, 0.13%)</title><a xlink:href="Flatten-pm-47-line.html#52" target="_top"><rect x="1068.4" y="129" width="1.6" height="15.0" fill="rgb(234,129,32)" rx="2" ry="2" />
+<text text-anchor="" x="1071.45" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('overload::OverloadedStringify (1,770 microseconds, 0.02%)')" onmouseout="c()" onclick="zoom(this)">
+<title>overload::OverloadedStringify (1,770 microseconds, 0.02%)</title><a xlink:href="overload-pm-36-line.html#88" target="_top"><rect x="1184.2" y="65" width="0.3" height="15.0" fill="rgb(243,165,42)" rx="2" ry="2" />
+<text text-anchor="" x="1187.23" y="75.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</a>
+</g>
+<g class="func_g" onmouseover="s('IO::Select::select (6,040,761 microseconds, 65.08%)')" onmouseout="c()" onclick="zoom(this)">
+<title>IO::Select::select (6,040,761 microseconds, 65.08%)</title><a xlink:href="IO-Select-pm-11-line.html#192" target="_top"><rect x="10.0" y="177" width="768.0" height="15.0" fill="rgb(241,163,39)" rx="2" ry="2" />
+<text text-anchor="" x="13.05" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >IO::Select::select</text>
+</a>
+</g>
+</svg>
