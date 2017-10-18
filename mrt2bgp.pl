@@ -20,6 +20,7 @@ my $cfg = { # default config values go here
     'local-ip' => '127.0.1.2',
     'local-as' => '65002',
     'peer-ip' => '127.0.1.1',
+    'only-first' => 1,
     'peer-as' => '65001',
     'exit-on-error' => 1,
 };
@@ -33,6 +34,7 @@ GetOptions(
     'local-as=s'    =>  \$cfg->{'local-as'},
     'peer-ip=s'    =>  \$cfg->{'peer-ip'},
     'peer-as=s'    =>  \$cfg->{'peer-as'},
+    'only-first!'  =>  \$cfg->{'only-first'},
 #    'daemon'        => \$cfg->{'daemon'},
 #    'pidfile=s'       => \$cfg->{'pidfile'},
     'help'          => \$help,
@@ -182,7 +184,9 @@ sub send_update {
         if ($net ne $prev_net) {
             my $update = bgpdump2update(@raw);
             $self->update($update);
-            $prev_net = $net;
+            if ($cfg->{'only-first'}) {
+                $prev_net = $net;
+            }
             $route_cnt++;
             $total_route_cnt++;
             $i++;
@@ -298,6 +302,11 @@ Peer IP
 =item B<--peer-as>
 
 Peer AS
+
+=item B<--only-first> (enabled by default, do --no-only-first to disable)
+
+Drop updates that apply to same network and are in order in MRT dump file.
+This is mainly to load RIPE dumps in reasonable time (they contain >13 mil updates for >600k nets)
 
 
 =item B<--help>
